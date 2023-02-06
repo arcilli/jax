@@ -73,6 +73,21 @@ py_library(
     ] + py_deps("absl/testing") + py_deps("numpy"),
 )
 
+py_library(
+    name = "lax_test_util",
+    testonly = 1,
+    srcs = [
+        "_src/lax_test_util.py",
+    ],
+    visibility = [
+        ":internal",
+    ],
+    deps = [
+        ":jax",
+        ":test_util",
+    ] + py_deps("numpy"),
+)
+
 py_library_providing_imports_info(
     name = "jax",
     srcs = glob(
@@ -90,6 +105,7 @@ py_library_providing_imports_info(
             "third_party/**/*.py",
         ],
         exclude = [
+            "_src/lax_test_util.py",
             "_src/test_util.py",
             "*_test.py",
             "**/*_test.py",

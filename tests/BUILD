@@ -427,25 +427,7 @@ jax_test(
         "tpu": 30,
         "iree": 40,
     },
-)
-
-pytype_library(
-    name = "lax_test_lib",
-    srcs = ["lax_test.py"],
-    srcs_version = "PY3",
-    deps = ["//jax"],
-)
-
-pytype_library(
-    name = "lax_vmap_test_lib",
-    testonly = 1,
-    srcs = ["lax_vmap_test.py"],
-    srcs_version = "PY3",
-    deps = [
-        ":lax_test_lib",
-        "//jax",
-        "//jax:test_util",
-    ],
+    deps = ["//jax:lax_test_util"],
 )
 
 jax_test(
@@ -457,7 +439,6 @@ jax_test(
         "tpu": 20,
         "iree": 40,
     },
-    deps = [":lax_test_lib"],
 )
 
 jax_test(
@@ -472,7 +453,7 @@ jax_test(
         "tpu": 40,
         "iree": 40,
     },
-    deps = [":lax_test_lib"],
+    deps = ["//jax:lax_test_util"],
 )
 
 py_test(
@@ -568,10 +549,6 @@ jax_test(
         "tpu": 30,
     },
     tags = ["multiaccelerator"],
-    deps = [
-        ":lax_test_lib",
-        ":lax_vmap_test_lib",
-    ],
 )
 
 jax_test(
@@ -926,9 +903,6 @@ jax_test(
     name = "ann_test",
     srcs = ["ann_test.py"],
     shard_count = 10,
-    deps = [
-        ":lax_test_lib",
-    ],
 )
 
 py_test(

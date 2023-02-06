@@ -28,12 +28,11 @@ import jax.numpy as jnp
 from jax import dtypes
 from jax import lax
 
+from jax._src import lax_test_util
 from jax._src import test_util as jtu
 from jax._src.lax import windowed_reductions as lax_windowed_reductions
 from jax._src.lib import xla_client
 from jax._src.util import prod, safe_map, safe_zip
-
-from lax_test import LAX_OPS
 
 from jax.config import config
 config.parse_flags_with_absl()
@@ -100,7 +99,7 @@ class LaxVmapTest(jtu.JaxTestCase):
         for shapes in itertools.combinations_with_replacement(shape_group, rec.nargs)
         for bdims in all_bdims(*shapes)],
       dtype=rec.dtypes,
-    ) for rec in LAX_OPS))
+    ) for rec in lax_test_util.lax_ops()))
   def testOp(self, op_name, rng_factory, shapes, dtype, bdims, tol):
     rng = rng_factory(self.rng())
     op = getattr(lax, op_name)
