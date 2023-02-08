@@ -12,18 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utilities for instrumenting code.
+from jax._src.deprecations import deprecation_getattr as _deprecation_getattr
 
-Code points can be marked as a named event. Every time an event is reached
-during program execution, the registered listeners will be invoked.
+x = 42
+deprecated_y = 101
 
-A typical listener callback is to send an event to a metrics collector for
-aggregation/exporting.
-"""
 
-from jax._src.monitoring import (
-  record_event as record_event,
-  record_event_duration_secs as record_event_duration_secs,
-  register_event_listener as register_event_listener,
-  register_event_duration_secs_listener as register_event_duration_secs_listener,
-)
+_deprecations = {
+    "y": ("Please use x", deprecated_y),
+    "z": ("Please do not use z", None),
+}
+
+__getattr__ = _deprecation_getattr(__name__, _deprecations)
