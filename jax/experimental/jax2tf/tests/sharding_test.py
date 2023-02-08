@@ -30,6 +30,7 @@ from jax.experimental import jax2tf
 from jax.experimental import pjit
 from jax.experimental.maps import xmap, Mesh
 from jax.interpreters.pxla import PartitionSpec as P
+from jax.experimental.shard_map import shard_map
 import jax.numpy as jnp
 from jax._src.lib import xla_bridge
 
@@ -229,14 +230,15 @@ class ShardedJitHloTest(tf_test_util.JaxToTfTestCase):
         num_partitions=2)
 
 
-class PjitTest(tf_test_util.JaxToTfTestCase):
+def create_test_mesh(*axis_names):
+  """Creates a mesh with 2 axes"""
+  assert len(axis_names) == 2, axis_names
+  nr_devices = len(jax.devices())
+  mesh_shape = (2, 1) if nr_devices >= 2 else (1, 1)
+  return jtu.create_global_mesh(mesh_shape, axis_names)
 
-  def create_test_mesh(self, *axis_names):
-    """Creates a mesh with 2 axes"""
-    assert len(axis_names) == 2, axis_names
-    nr_devices = len(jax.devices())
-    mesh_shape = (2, 1) if nr_devices >= 2 else (1, 1)
-    return jtu.create_global_mesh(mesh_shape, axis_names)
+
+class ShardingTest(tf_test_util.JaxToTfTestCase):
 
   @jtu.with_mesh([("axis", 2)])
   def test_pjit_basic1D(self):
@@ -279,13 +281,13 @@ class PjitTest(tf_test_util.JaxToTfTestCase):
     def func_jax(x, y):
       return x + y * const
 
-    with self.create_test_mesh("x", "y"):
+    with create_test_mesh("x", "y"):
       self.ConvertAndCompare(func_jax, jnp.ones((4, 3), dtype=np.float32),
                              jnp.ones((1, 1), dtype=np.float32),
                              limitations=[skip_eager_for_partitioning])
 
   def test_pjit_closed_over_global_device_array(self):
-    global_mesh = self.create_test_mesh("x", "y")
+    global_mesh = create_test_mesh("x", "y")
 
     input1 = np.arange(16).reshape(2, 8)
     input2_raw = np.arange(16).reshape(8, 2)
@@ -303,7 +305,7 @@ class PjitTest(tf_test_util.JaxToTfTestCase):
                              limitations=[skip_eager_for_partitioning])
 
   def test_nested_pjit(self):
-    global_mesh = self.create_test_mesh("x", "y")
+    global_mesh = create_test_mesh("x", "y")
     x = np.arange(16).reshape(2, 8)
 
     def func_jax(x):
@@ -365,6 +367,64 @@ class PjitTest(tf_test_util.JaxToTfTestCase):
           jax2tf.convert(fm, experimental_native_lowering=True),
           autograph=False, jit_compile=True)(a, b)
     self.assertAllClose(res_tf, res_jax)
+
+  @jtu.ignore_warning(category=UserWarning,
+                      message="all_to_all .* are only implemented properly for TPUs and GPUs .*")
+  @jtu.with_mesh([('x', 2)])
+  def test_shmap_all_to_all(self):
+    devices = np.array(jax.devices()[:2])  # Use only 2 devices
+    mesh = Mesh(devices, axis_names=('x'))
+
+    @partial(pjit.pjit,
+             in_axis_resources=(P('x', None),), out_axis_resources=P(None, 'x'))
+    @partial(shard_map, mesh=mesh,
+             in_specs=(P('x', None),), out_specs=P(None, 'x'))
+    def fwd(b):  # b: f32[2, 4]
+      return lax.all_to_all(b, 'x', split_axis=1, concat_axis=1, tiled=True)
+
+    a = jnp.arange(np.prod(4 * 4)).reshape((4, 4))
+    res_jax = fwd(a)  # res: f32[2, 8]
+    b0, b1 = jnp.split(a, 2, axis=0)  # The shard_map in_specs splits on axis 0
+    b00, b01 = jnp.split(b0, 2, axis=1)  # split_axis=1
+    b10, b11 = jnp.split(b1, 2, axis=1)
+    b0 = jnp.concatenate([b00, b10], axis=1)  # concat_axis=1
+    b1 = jnp.concatenate([b01, b11], axis=1)
+    res = jnp.concatenate([b0, b1], axis=1)  # out_specs concatenates on axis 1
+    self.assertAllClose(res_jax, res)
+    #_log_sharding_annotations(self, fwd, [a],
+    #                          experimental_native_lowering=True)
+    res_tf = tf.function(
+          jax2tf.convert(fwd, experimental_native_lowering=True),
+          autograph=False, jit_compile=True)(a)
+    self.assertAllClose(res_tf, res_jax)
+
+  @jtu.with_mesh([('x', 2)])
+  def test_shmap_collective_permute(self):
+    devices = np.array(jax.devices()[:2])  # use 2 devices
+    mesh = Mesh(devices, axis_names=('x'))
+
+    @partial(pjit.pjit,
+             in_axis_resources=(P('x', None),), out_axis_resources=P('x', None))
+    @partial(shard_map, mesh=mesh,
+             in_specs=(P('x', None),), out_specs=P('x', None))
+    def fwd(b):  # b: f32[2, 4]
+      axis_size = lax.psum(1, 'x')
+      perm = [(j, (j + 1) % axis_size) for j in range(axis_size)]
+      return lax.ppermute(b, 'x', perm=perm)
+
+    a = jnp.arange(np.prod(4 * 4)).reshape((4, 4))
+    res_jax = fwd(a)
+    b0, b1 = jnp.split(a, 2, axis=0)  # The shard_map splits on axis 0
+    b0, b1 = b1, b0
+    expected = jnp.concatenate([b0, b1], axis=0)  # out_specs concatenates on axis 0
+    self.assertAllClose(res_jax, expected)
+    #_log_sharding_annotations(self, fwd, [a],
+    #                          experimental_native_lowering=True)
+    res_tf = tf.function(
+        jax2tf.convert(fwd, experimental_native_lowering=True),
+        autograph=False, jit_compile=True)(a)
+    self.assertAllClose(res_tf, res_jax)
+
 
 if __name__ == "__main__":
   absltest.main(testLoader=jtu.JaxTestLoader())
