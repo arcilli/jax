@@ -2715,55 +2715,65 @@ def check_if_any_auto(
       return True
   return False
 
+ShardingInfo = Tuple[Union[sharding_internal.XLACompatibleSharding,
+                           UnspecifiedValue, AUTOAxisResource],
+                     str, Optional[Any]]
 
 def _get_and_check_device_assignment(
-    shardings: Iterable[Union[sharding_internal.XLACompatibleSharding,
-                              UnspecifiedValue, AUTOAxisResource]],
-    devices: Optional[Sequence[xc.Device]]
+    shardings: Iterable[ShardingInfo],
+    devices: Optional[Sequence[xc.Device]],
+    api_name: str,
 ) -> Tuple[xla.Backend, Sequence[xc.Device]]:
   from jax._src.api import local_devices
 
-  first_device_assignment = None
+  first_sharding_info = None
   if devices is None:
     devices = []
   else:
     devices = list(devices)
 
-  for i in shardings:
+  for i, s_type, arg in shardings:
     if is_auto(i) or _is_unspecified(i):
       continue
-    # Assign `first_device_assignment` after `AUTO` and `UNSPECIFIED` have been
+    # Assign `first_sharding_info` after `AUTO` and `UNSPECIFIED` have been
     # skipped.
-    if first_device_assignment is None:
-      first_device_assignment = list(i._device_assignment)  # type: ignore
+    if first_sharding_info is None:
+      first_sharding_info = (list(i._device_assignment), s_type, arg)  # type: ignore
     arr_device_assignment = list(i._device_assignment)  # type: ignore
     if not devices:
-      if first_device_assignment != arr_device_assignment:
-        p1 = first_device_assignment[0].platform.upper()
-        fda_ids = [d.id for d in first_device_assignment]
+      if first_sharding_info[0] != arr_device_assignment:
+        p1 = first_sharding_info[0][0].platform.upper()
+        fda_ids = [d.id for d in first_sharding_info[0]]
+        first_arg = first_sharding_info[2]
+        first_arg_shape_str = ('' if first_arg is None else
+                               f" and shape {first_arg.shape} for arg {first_arg}")
         a_ids = [d.id for d in arr_device_assignment]
         p2 = arr_device_assignment[0].platform.upper()
+        arg_shape_str = '' if arg is None else f" and shape {arg.shape} for arg {arg}"
         raise ValueError(
-            "Devices of all `Array` inputs and outputs should be "
-            "the same. "
-            f"Got array device ids {fda_ids} on platform {p1} and "
-            f"another array's device ids {a_ids} on platform {p2}")
+            f"Received incompatible devices for {api_name}ted computation. "
+            f"Got {first_sharding_info[1]} with device ids {fda_ids} on "
+            f"platform {p1}{first_arg_shape_str} and "
+            f"got another {s_type} with device ids {a_ids} on platform {p2}"
+            f"{arg_shape_str}")
     else:
       if devices != arr_device_assignment:
         p1 = devices[0].platform.upper()
         dev_ids = [d.id for d in devices]
         a_ids = [d.id for d in arr_device_assignment]
         p2 = arr_device_assignment[0].platform.upper()
+        arg_shape_str = '' if arg is None else f" and shape {arg.shape} for arg {arg}"
         raise ValueError(
-            "Pjit's devices and Array's devices should be equal. "
-            f"Got Pjit's device ids {dev_ids} on platform {p1} and "
-            f"Array's device ids {a_ids} on platform {p2}")
-  if first_device_assignment is None and devices:
+            f"Received incompatible devices for {api_name}ted computation. "
+            f"Got {api_name}'s device ids {dev_ids} on platform {p1} and "
+            f"got another {s_type} with device ids {a_ids} on platform {p2}"
+            f"{arg_shape_str}")
+  if first_sharding_info is None and devices:
     final_device_assignment = devices
-  elif first_device_assignment is None:
+  elif first_sharding_info is None:
     final_device_assignment = [config.jax_default_device or local_devices()[0]]
   else:
-    final_device_assignment = first_device_assignment
+    final_device_assignment = first_sharding_info[0]
   return xb.get_device_backend(final_device_assignment[0]), final_device_assignment
 
 
@@ -2807,8 +2817,11 @@ def lower_sharding_computation(
   # Device assignment across all inputs, outputs and shardings inside jaxpr
   # should be the same.
   jaxpr_sharding = list(dispatch.jaxpr_shardings(jaxpr))
-  backend, device_assignment = _get_and_check_device_assignment(it.chain(
-      in_shardings, out_shardings, jaxpr_sharding), devices_from_context)  # type: ignore
+  backend, device_assignment = _get_and_check_device_assignment(
+      it.chain([(i, 'in_sharding', None) for i in in_shardings],
+               [(o, 'out_sharding', None) for o in out_shardings],  # type: ignore
+               [(js, 'sharding inside computation', None) for js in jaxpr_sharding]),
+      devices_from_context, api_name)
 
   # TODO(yashkatariya): Make this logic work after DCE because there can be
   # equations inside the jaxpr that don't affect the output so whether the

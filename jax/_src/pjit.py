@@ -271,7 +271,8 @@ def post_infer_params(fun, infer_params_fn, static_argnums, static_argnames,
       resource_env = params['resource_env']
       mesh = None if resource_env is None else resource_env.physical_mesh
       in_shardings = _resolve_in_shardings(
-          args_flat, params['in_shardings'], params['out_shardings'], mesh)
+          args_flat, params['in_shardings'], params['out_shardings'], mesh,
+          'pjit' if resource_env is not None else 'jit')
     else:
       in_shardings = params['in_shardings']
     in_is_global = _calc_is_global_sequence(
@@ -1060,7 +1061,8 @@ pjit_p.multiple_results = True
 def _resolve_in_shardings(
     args, pjit_in_shardings: Sequence[PjitSharding],
     out_shardings: Sequence[PjitSharding],
-    pjit_mesh: Optional[pxla.Mesh]) -> Sequence[PjitSharding]:
+    pjit_mesh: Optional[pxla.Mesh],
+    api_name: str) -> Sequence[PjitSharding]:
   # If True, means that device or backend is set by the user on pjit and it
   # has the same semantics as device_put i.e. doesn't matter which device the
   # arg is on, reshard it to the device mentioned. So don't do any of the
@@ -1081,14 +1083,17 @@ def _resolve_in_shardings(
       if isinstance(arg_s, PmapSharding):
         continue
       if getattr(a, '_committed', True):
-        committed_arg_shardings.append(arg_s)
+        committed_arg_shardings.append((arg_s, 'committed argument', a))
 
   # Check if the device_assignment across inputs, outputs and arguments is the
   # same.
   pxla._get_and_check_device_assignment(
       it.chain(
-          committed_arg_shardings, pjit_in_shardings, out_shardings),
-      (None if pjit_mesh is None or pjit_mesh.empty else list(pjit_mesh.devices.flat)))
+          committed_arg_shardings,
+          [(i, f'{api_name} in_sharding', a) for i, a in safe_zip(pjit_in_shardings, args)],
+          [(o, f'{api_name} out_sharding', None) for o in out_shardings]),
+      (None if pjit_mesh is None or pjit_mesh.empty else list(pjit_mesh.devices.flat)),
+      api_name)
 
   resolved_in_shardings = []
   for arg, pjit_in_s in safe_zip(args, pjit_in_shardings):
@@ -1155,7 +1160,8 @@ def _pjit_call_impl(*args, jaxpr,
   if config.jax_array:
     in_shardings = _resolve_in_shardings(
         args, in_shardings, out_shardings,
-        resource_env.physical_mesh if resource_env is not None else None)
+        resource_env.physical_mesh if resource_env is not None else None,
+        'pjit' if resource_env is not None else 'jit')
 
   in_is_global = _calc_is_global_sequence(in_positional_semantics, in_shardings)
   if config.jax_array:

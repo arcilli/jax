@@ -1977,7 +1977,7 @@ class ArrayPjitTest(jtu.JaxTestCase):
     with jax_array(True):
       with global_mesh:
         with self.assertRaisesRegex(
-            ValueError, "Pjit's devices and Array's devices should be equal"):
+            ValueError, "Received incompatible devices for pjitted computation"):
           pjit(lambda x: x)(input_array)
 
   def test_array_lower_compile(self):
@@ -2066,7 +2066,7 @@ class ArrayPjitTest(jtu.JaxTestCase):
     with jax_array(True):
       with m1:
         with self.assertRaisesRegex(
-            ValueError, "Pjit's devices and Array's devices should be equal"):
+            ValueError, "Received incompatible devices for pjitted computation"):
           pjit(lambda x, y: (x, y),
                out_axis_resources=(NamedSharding(m1, spec),
                                    NamedSharding(m2, spec)))(a1, a1)
@@ -2082,7 +2082,7 @@ class ArrayPjitTest(jtu.JaxTestCase):
     with jax_array(True):
       with m1:
         with self.assertRaisesRegex(
-            ValueError, "Pjit's devices and Array's devices should be equal"):
+            ValueError, "Received incompatible devices for pjitted computation"):
           pjit(lambda x, y: (x, y),
                in_axis_resources=NamedSharding(m2, spec),
                out_axis_resources=NamedSharding(m1, spec))(a1, a1)
@@ -2329,7 +2329,7 @@ class ArrayPjitTest(jtu.JaxTestCase):
     with jtu.create_global_mesh((2, 2), ('x', 'y')):
       with self.assertRaisesRegex(
           ValueError,
-          "Pjit's devices and Array's devices should be equal."):
+          "Received incompatible devices for pjitted computation"):
         pjit(lambda x, y: (x, y))(uarr, carr)
 
   @jax_array(True)
@@ -2353,9 +2353,10 @@ class ArrayPjitTest(jtu.JaxTestCase):
     b = jax.device_put(np.array([4, 5, 6]), jax.devices()[1])
     with self.assertRaisesRegex(
         ValueError,
-        "Devices of all `Array` inputs and outputs should be the same. "
-        r"Got array device ids \[0\] on platform.*and "
-        r"another array's device ids \[1\] on platform"):
+        "Received incompatible devices for pjitted computation. Got committed "
+        r"argument with device ids \[0\] on platform.*and shape \(3,\) for "
+        r"arg \[1 2 3\] and got another committed argument with device ids \[1\] "
+        r"on platform.*and shape \(3,\) for arg \[4 5 6\]"):
       pjit(lambda x, y: (x, y))(a, b)
 
   @jax_array(True)
@@ -2485,11 +2486,16 @@ class ArrayPjitTest(jtu.JaxTestCase):
     committed_inp = jax.device_put(jnp.zeros((8, 2), jnp.bfloat16), jax.devices()[0])
     with self.assertRaisesRegex(
         ValueError,
-        "Devices of all `Array` inputs and outputs should be the same"):
+        "Received incompatible devices for jitted computation. Got in_sharding "
+        r"with device ids \[0\] on platform.*and got another sharding inside "
+        r"computation with device ids \[0, 1, 2, 3\] on platform.*"):
       sharded_inp(committed_inp)
 
   @jax_array(True)
   def test_jit_device_with_sharding_constraint_error(self):
+    if not jax.config.jax_jit_pjit_api_merge or not jax.config.jax_array:
+      self.skipTest('Requires jax.Array and jit-pjit merge.')
+
     mesh = jtu.create_global_mesh((2, 2), ('x', 'y'))
 
     @partial(jax.jit, static_argnums=(0, 1), device=jax.devices()[0])
@@ -2497,16 +2503,10 @@ class ArrayPjitTest(jtu.JaxTestCase):
       out = jnp.zeros(shape, jnp.bfloat16)
       return jax.lax.with_sharding_constraint(out, NamedSharding(mesh, pspec))
 
-    # This split is needed because original `jit` adds `device` as a
-    # `devices_from_context` whereas `pjit` passes it as an in_sharding.
-    if jax.config.jax_jit_pjit_api_merge:
-      error_msg = ("Devices of all `Array` inputs and outputs should be the same. "
-                   r"Got array device ids \[0\] on platform.*and "
-                   r"another array's device ids \[0, 1, 2, 3\] on platform")
-    else:
-      error_msg = ("Pjit's devices and Array's devices should be equal. "
-                   r"Got Pjit's device ids \[0\] on platform.*and "
-                   r"Array's device ids \[0, 1, 2, 3\] on platform")
+    error_msg = ("Received incompatible devices for jitted computation. Got "
+                 r"out_sharding with device ids \[0\] on platform.*and got "
+                 "another sharding inside computation with device ids "
+                 r"\[0, 1, 2, 3\] on platform.*")
 
     with self.assertRaisesRegex(ValueError, error_msg):
       sharded_zeros((4096, 3072), P('x', 'y'))
